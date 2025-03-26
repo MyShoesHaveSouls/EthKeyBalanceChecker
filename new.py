@@ -38,50 +38,10 @@ no_of_accounts = get_user_input("Number of accounts per batch: ", lambda x: x > 
 check_in_thread = (end_value - start_value) // number_of_threads
 
 # List of API keys
-api_keys = [import asyncio
-import httpx
-import logging
-from Crypto.Hash import keccak
-import ecdsa
-import binascii
-import itertools
-
-logging.basicConfig(level=logging.INFO)
-
-# Function to write balances to file
-def save_to_file(data):
-    with open("balances.txt", "a") as f:
-        f.write(data + "\n")
-
-# Function to distribute API keys evenly across threads
-def distribute_api_keys(keys, num_threads):
-    key_iterator = itertools.cycle(keys)
-    return [next(key_iterator) for _ in range(num_threads)]
-
-# Function to get user input with validation
-def get_user_input(prompt, condition):
-    while True:
-        try:
-            value = int(input(prompt))
-            if not condition(value):
-                print(f"Invalid input: {prompt}")
-                continue
-            return value
-        except ValueError:
-            print("Error: value should be in integer format")
-
-# Collecting user inputs
-start_value = get_user_input("Start value: ", lambda x: x > 0)
-end_value = get_user_input("End value: ", lambda x: x > start_value)
-number_of_threads = get_user_input("Number of threads: ", lambda x: x > 0)
-no_of_accounts = get_user_input("Number of accounts per batch: ", lambda x: x > 0)
-check_in_thread = (end_value - start_value) // number_of_threads
-
-# List of API keys
 api_keys = [
     '5K221ME7PYP5RUE1E1CBCB8WU2UV3EMKDS',
     'QQVKPQFWG7X2NU67549KEEH2RMVJS3KCPW',
-    'JPPXZJ51MRYMKWBXMPCU266M6DNK8J5MXR'
+    'JPPXZJ51MRYMKWBXMPCU266M6DNK8J5MXR',
 ]
 
 # Function to generate Ethereum address from private key

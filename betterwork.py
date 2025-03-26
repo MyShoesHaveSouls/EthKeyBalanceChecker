@@ -4,51 +4,21 @@ import logging
 from Crypto.Hash import keccak
 import ecdsa
 import binascii
-from discordwebhook import Discord
 import itertools
+import secrets  # For cryptographically secure random key generation
+from tqdm import tqdm  # Progress bar
 
 logging.basicConfig(level=logging.INFO)
 
-# Constants for batch notifications
-BATCH_SIZE = 10
-BATCH_INTERVAL = 5  # in seconds
-
-# List to accumulate notification messages
-notification_buffer = []
-
-# Function to send batch notifications
-async def send_batch_notifications():
-    global notification_buffer
-    if notification_buffer:
-        batch_message = "\n".join(notification_buffer)
-        discord_notification(batch_message)
-        notification_buffer = []
-
-# Function to enqueue notification messages
-def enqueue_notification(message):
-    global notification_buffer
-    notification_buffer.append(message)
-    if len(notification_buffer) >= BATCH_SIZE:
-        asyncio.create_task(send_batch_notifications())
-
-# Function to send individual notifications with throttling
-async def send_notification(message):
-    enqueue_notification(message)
-    await asyncio.sleep(BATCH_INTERVAL)
+# Function to write balances to file
+def save_to_file(data):
+    with open("balances.txt", "a") as f:
+        f.write(data + "\n")
 
 # Function to distribute API keys evenly across threads
 def distribute_api_keys(keys, num_threads):
     key_iterator = itertools.cycle(keys)
     return [next(key_iterator) for _ in range(num_threads)]
-
-# Function to determine optimal batch size
-def get_optimal_batch_size():
-    # Set an initial conservative value
-    optimal_batch_size = 10
-    # Adjust batch size based on factors such as API rate limits, network latency, and server load
-    # This is a placeholder, actual adjustments should be based on performance measurements
-    # For simplicity, we'll keep it fixed for now
-    return optimal_batch_size
 
 # Function to get user input with validation
 def get_user_input(prompt, condition):
@@ -65,38 +35,33 @@ def get_user_input(prompt, condition):
 # Collecting user inputs
 start_value = get_user_input("Start value: ", lambda x: x > 0)
 end_value = get_user_input("End value: ", lambda x: x > start_value)
-number_of_threads = get_user_input("Number of threads: ", lambda x: x > 0)
-no_of_accounts = get_user_input("Number of accounts per batch: ", lambda x: x > 0)
-check_in_thread = (end_value - start_value) // number_of_threads
 
-# Discord notification function
-def discord_notification(msg):
-    try:
-        webhook_url = "https://discord.com/api/webhooks/1237273754414092328/TKG1nt0b7VCWspq-oFpModKHWLcsQB-aAaNBLHxYDSJXDIa-c9OF0J6WH2n9L-UjwPPh"
-        discord = Discord(url=webhook_url)
-        discord.post(content=msg)
-    except Exception as e:
-        logging.error(f"Failed to send Discord notification: {e}")
+# Set default values for threads and batch size
+number_of_threads = 4  # Set the number of threads
+no_of_accounts = 100  # Set the number of accounts per batch
+
+check_in_thread = (end_value - start_value) // number_of_threads
 
 # List of API keys
 api_keys = [
     'F92Z14GE2DTF6PBBYY1YPHPJ438PT3P2VI',
     '4Q5U7HNF4CGTVTGEMGRV5ZU9WYNJ6N7YA5',
     'EX8K12JY7BCVG8RAUU8X2Z6QT2GCF5EYB4',
-    'DZHWCIEA2WW86CZEC88IGWG1JFB6JN3VHS',
-    'YIDAXPUWHJB21RJVMS1JMXHABMEF67RQWG',
-    '12RU83G1ATVA9V4EMM3U45X8BG4RG9PM6T',
-    'PYM9U2QD949KZZX23QJ4YZRX3KC3PHAI88',
-    'SH884AZJMKIFDMAPSMHTHJUQ3QIRPH827I',
-    'PYM9U2QD949KZZX23QJ4YZRX3KC3PHAI88',
-    'TDMPDZU8RD4V9FVB66P5S47QETEJ6R61UY'
+    'DZHWCIEA2WW86CZEC88IGWG1JFB6JN3VHS'
 ]
 
-# Function to generate Ethereum address from private key
+# Function to check if the address has at least 16 unique characters
+def has_unique_characters(address):
+    # Remove the '0x' prefix
+    address = address[2:]
+    unique_chars = set(address)
+    return len(unique_chars) >= 16
+
+# Function to generate Ethereum address from a random private key
 async def generate_address(private_key, num):
     addresses = []
     for i in range(num):
-        private_key_hex = hex(private_key + i)[2:].zfill(64)
+        private_key_hex = private_key.hex()
         sk = ecdsa.SigningKey.from_string(binascii.unhexlify(private_key_hex), curve=ecdsa.SECP256k1)
         vk = sk.get_verifying_key()
         public_key = vk.to_string()
@@ -104,73 +69,65 @@ async def generate_address(private_key, num):
         keccak_hash.update(public_key)
         public_key_hash = keccak_hash.digest()
         ethereum_address = "0x" + public_key_hash.hex()[-40:]
-        addresses.append(ethereum_address)
+        
+        # Only add addresses with 16 unique characters
+        if has_unique_characters(ethereum_address):
+            addresses.append(ethereum_address)
     return addresses
 
-# Function to get balance of Ethereum addresses with retries and exponential backoff
+# Function to get balance of Ethereum addresses
 async def get_balance(addresses, api_key, client):
-    address_str = ','.join(addresses)
-    url = f'https://api.etherscan.io/api?module=account&action=balancemulti&address={address_str}&tag=latest&apikey={api_key}'
-    retry_attempts = 3
-    retry_delay = 1
-    for attempt in range(retry_attempts):
-        try:
-            response = await client.get(url)
-            response.raise_for_status()
-            return response.json()
-        except httpx.HTTPStatusError as e:
-            logging.error(f"HTTP error: {e}")
-        except httpx.RequestError as e:
-            logging.error(f"Request error: {e}")
-        logging.info(f"Retrying in {retry_delay} seconds...")
-        await asyncio.sleep(retry_delay)
-        retry_delay *= 2  # Exponential backoff
-    logging.error(f"Failed to fetch balance for addresses: {addresses}")
+    url = f'https://api.etherscan.io/api?module=account&action=balancemulti&address={"".join(addresses)}&tag=latest&apikey={api_key}'
+    try:
+        response = await client.get(url)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logging.error(f"Error fetching balance: {e}")
     return None
-
-# Function to run the balance check process for a batch
-async def run_batch(batch_index, start, no_of_accounts, api_key, client):
-    addresses = await generate_address(start, no_of_accounts)
-    response = await get_balance(addresses, api_key, client)
-    return await process_balance_response(response, start, no_of_accounts)
 
 # Function to process the balance response
 async def process_balance_response(response, start, no_of_accounts):
-    if response is None:
-        return False
-    if 'status' in response and response['status'] == '1':
+    if response and 'status' in response and response['status'] == '1':
         for index, rec in enumerate(response['result']):
             hex_id = start + index
             balance_wei = int(rec['balance'])
-            if balance_wei > 3000000000000000:
-                await send_notification(f"Found good balance, private-key {hex(hex_id)[2:].zfill(64)}")
-            elif balance_wei > 0:
-                logging.info(f"{hex_id} {rec['account']} {balance_wei / 1e18}")
-        return True
+            if balance_wei > 0:
+                entry = f"{hex_id} {rec['account']} {balance_wei / 1e18} ETH"
+                logging.info(entry)
+                save_to_file(entry)
     else:
-        logging.error(f"Invalid response status: {response}")
-    return False
+        logging.error(f"Invalid response: {response}")
 
-# Function to run the balance check process for each thread
-async def run(start, thread_index, check_in_thread, no_of_accounts, api_keys, client):
-    count = start
-    while count < start + check_in_thread:
-        await run_batch(thread_index, count, no_of_accounts, api_keys[thread_index], client)
-        count += no_of_accounts
+# Function to run the balance check process
+async def run_batch(batch_index, start, no_of_accounts, api_key, client, pbar):
+    # Generate a random 32-byte private key for each batch
+    private_key = secrets.token_bytes(32)  # Random 256-bit private key
+    
+    addresses = await generate_address(private_key, no_of_accounts)
+    response = await get_balance(addresses, api_key, client)
+    await process_balance_response(response, start, no_of_accounts)
+    pbar.update(1)  # Update the progress bar after processing a batch
 
 # Function to run multiple threads
 async def run_multiple_threads():
     tasks = []
     global start_value
     distributed_api_keys = distribute_api_keys(api_keys, number_of_threads)
+    
+    # Initialize the progress bar for the total number of batches
+    total_batches = (end_value - start_value) // no_of_accounts
+    pbar = tqdm(total=total_batches, desc="Processing Batches", unit="batch")
+    
     async with httpx.AsyncClient() as client:
         for thread_index in range(number_of_threads):
-            tasks.append(run(start_value, thread_index, check_in_thread, no_of_accounts, distributed_api_keys, client))
+            tasks.append(run_batch(thread_index, start_value, no_of_accounts, distributed_api_keys[thread_index], client, pbar))
             start_value += check_in_thread
+        
+        # Wait for all tasks to finish
         await asyncio.gather(*tasks)
 
+    pbar.close()  # Close the progress bar when done
+
 if __name__ == "__main__":
-    try:
-        asyncio.run(run_multiple_threads())
-    except Exception as e:
-        discord_notification(f"Server 01: Failed to run, restart it. {e}")
+    asyncio.run(run_multiple_threads())
